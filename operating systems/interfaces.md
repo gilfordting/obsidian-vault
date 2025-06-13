@@ -1,0 +1,32 @@
+- what's the job of an operating system?
+	- share a computer among multiple programs
+	- provide a more useful set of services than just what the hardware supports
+	- manages and abstracts the low-level hardware
+	- shares the hardware across multiple programs, so they can appear to run at the same time
+	- provide controlled ways for programs to interact, so they can share data or work together
+- services are provided to user programs through interface
+- design is tricky to get right!
+	- would like it to be simple and narrow, to get impl. right
+	- but we might also want to provide lots of sophisticated features
+	- how do we do this? a few mechanisms that can be combined to provide generality
+- uses `xv6`, for concrete examples
+	- basic interfaces introduced by Unix; also mimics Unix's internal design
+	- Unix has narrow interface with mechanisms that combine well -- surprising degree of generality
+	- lots of modern OSes have Unix-like interfaces
+- `xv6` takes traditional form of a *kernel*, special program that provides services to running programs
+	- each running program (process) has memory with instructions, data, and stack
+		- instructions: implement computation
+		- data: variables on which computation acts
+		- stack: organizes program's procedure calls
+	- lots of processes, but only one kernel
+- what if the process needs to invoke a kernel service? invoke a *system call*
+	- this is something provided by the OS interface
+	- the syscall enters the kernel, kernel performs service, and return
+	- so alternation between user space and kernel space
+- kernel uses hardware protection mechanisms provided by CPU, ensures that each process executing in user space can access only own memory
+	- so the kernel has hardware privileges required to implement these protections
+	- user programs do not have these privileges
+	- so syscalls raise the privilege level and executes a *pre-arranged* function in the kernel
+- collection of system calls provided by kernel: the interface that user programs see
+- `xv6` kernel provides subset of Unix ones
+- 
