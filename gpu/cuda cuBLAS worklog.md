@@ -1,0 +1,165 @@
+[link](https://siboehm.com/articles/22/CUDA-MMM)
+# kernel 1, naive
+- computation ordered in 3-level hierarchy
+- each kernel has a *grid* composed of multiple *blocks*, each *block* of up to 1024 individual threads
+- threads in the same block have access to same shared memory region
+- number of threads in block configured through variable `blockDim`, 3-D vector (x, y, z)
+- number of blocks on grid configurable using `gridDim`
+- thread hierarchy mostly for *correctness*
+- for *performance*, don't treat all threads in same block as equals
+- use grid, block, thread hierarchy to assign each thread a unique entry in result matrix C
+- thread computes dot product of row of A and col of B
+- write result to C
+- each location of C written to by only one thread, so no synchronization
+- cuda code written from a *single-threaded* perspective
+- in code, access `blockIdx` and `threadIdx`
+## lower bounding fastest possible runtime
+- $N = 4092$
+- matmul of two $N^2$ matrices
+- addition of $N^2$ matrix
+- each of the $N^2$ entries in result comes from dot product of two size-$N$ vectors
+	- $N^2(N+(N-1)+1) = 2N^3$ FLOPS
+		- per dot-product: $N$ multiplications, $N-1$ additions
+		- then add the 1 entry from the other matrix
+		- might be $N$ additions?? but this is negligible when $N$ large
+- 137 GFLOPS
+- total data to read: A, B, C, each $N^2$ matrices containing 4B entries
+	- $3 \cdot N^2 \cdot 4\text{B}$
+	- 201 MB
+- total data to store: same, but down by factor of 3
+	- 67 MB
+- 268 MB of data to transfer, at minimum
+	- assuming the cache is big enough
+- we can only get to these peaks if we use hardware well
+	- for compute, this is FMA instructions which tend to have highest FLOPS
+	- for memory, this is an access pattern suited to hardware
+- some upper bounds, from advertised limits (A6000)
+	- 30 TFLOPs/s of fp32 compute
+	- 768 GB/s of global mem bandwith
+- 4.57 ms for compute
+- 0.35 ms for memory
+- calculation is 10x memory, roughly
+- we are compute-bound, as long as we end up having to transfer <10x absolute minimum memory volume of 278 mb
+## memory access pattern of naive kernel
+- two threads in same block with thread ids (0, 0) and (0, 1) will load same column of B but diff rows of A
+- each thread loads in $2 \cdot 4092 + 1$ floats from gmem
+- $4092^2$ threads, so 548GB mem traffic
+- we can optimize mem access such that gmem is coalesced, fewer accesses
+# kernel 2, global mem coalescing
+- what's a *warp*?
+	- for execution, threads of a block grouped into warps -- 32 threads
+	- warps are assigned to warp scheduler, the physical core that executes instructions
+	- four warp schedulers per multiprocessor
+- grouping into warps happens based on consecutive `threadId`
+	- `threadId = threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z)`
+- so neighboring `threadId` = same warp
+- sequential memory accesses by threads part of the same warp -- grouped and executed as one
+	- global memory coalescing
+- so turned into 2 32B loads instead of 16 4B ones
+- data must be consecutive in memory, with aligned access
+	- within a warp, access doesn't have to be consecutive
+- how to enable coalescing? change how we assign positions of the result matrix C to threads
+- instead, within a warp:
+	- use the same row
+	- but different columns
+	- then we get contiguity across columns
+- access coalescing done by the hardware, at runtime
+	- this requires aligned access -- cannot be guaranteed at compile time, because matrix pointers are func args
+- next, use shared memory to cache reused data
+# kernel 3, shared memory cache-blocking
+- smaller shared memory region next to large global memory
+- one shared memory per SM
+- so, the shared memory is partitioned among the blocks
+- this means, a thread can communicate with other threads in the same block via smem chunk
+- on A6000: each block has access to max of 48KB of smem
+- it's located on-chip, so it has a much lower latency and higher bandwidth
+- next kernel: load chunk of A and chunk of B from gmem into smem
+- perform as much work as we can on the two chunks -- each thread is still assigned one entry of C
+- move chunks along cols of A, rows of B performing partial sums until result computed
+- higher mem bandwidth than cuBLAS, but lower arith. intensity -- overall perf is worse
+- we don't want to use all of the shared memory, there are downsides to increasing per-block shared-memory usage
+- each SM has max of 100KB of SMEM available
+- if the kernel uses the full 48KB of SMEM, only two blocks can be loaded at the same time
+- increasing per-block SMEM utilization can decrease occupancy
+	- this is the ratio between # of active warps per SM, max poss. number of active warps per SM
+	- we want high occupancy, because we can context-switch to hide the latency of our operations
+	- math ops like FMA have latency of 4 cycles on GPUs
+- three main limits to keeping more active blocks loaded: reg count, warp count, SMEM capacity
+## occupancy calculation for kernel
+- hardware stats:
+	- shared mem per SM: 102400B
+	- max threads per block: 1024
+	- max threads per SM: 1536
+	- max regs per block: 65536
+- resource demands, from kernel:
+	- regs per thread: 37
+	- smem per block: 8192B
+	- threads per block: 1024
+- work is scheduled onto the SMs at a block-level granularity
+- and each SM will load more blocks, if accomodatable
+- calculations
+	- shared memory
+		- 8192B/Block + 1024B/Block (CUDA runtime) = 9216B/block
+		- 102400B/SM / 9216B/Block = 11.11 => upper limit of 11 blocks
+	- threads
+		- 1024 threads per block, max 1536 threads per SM => upper limit of 1 block
+	- regs
+		- 37 regs per thread x 32 threads per warp = 1184 regs per warp
+		- register allocation granularity is 256 regs at warp level, so 1280 regs per warp
+		- 32 warps per block, so 40960 regs per block
+		- upper limit of 1 block
+- so we can't load more than one block per SM
+	- 32 active warps / 48 max active, 66%
+- looking at the mix of executed instructions, most are memory loads
+	- `lds`, shared memory loads
+	- we also have:
+		- `fma`, fused multiply-add
+		- `iadd3`, 3-input integer addition (this is for moving pointers)
+- sampling of warp states
+	- Stall MIO Throttle in first
+	- Stall Long Scoreboard
+	- Stall Not Selected
+		- means warp was eligible to be scheduled, but scheduler chose another warp instead
+		- this also means occupancy is not a problem, it's high enough where there are no no-ops
+- stall mio throttle:
+	- warp stalled waiting for MIO (memory I/O) instruction queue to not be full
+	- usually b/c extreme utilization of MIO pipelines
+	- special math instructions, dynamic branches, shared memory instructions
+	- must be the last one -- we're waiting for our SMEM accesses to return
+- we can have less SMEM instructions if each thread computes more than one output element
+- this way, more work in registers
+# kernel 4, 1D blocktiling for calculating multiple results per thread
+- new inner loop, for calculating multiple C entries per thread
+- we have `BM`, `BN`, `BK`
+	- 64, 64, 8, respectively
+	- so in total, 1024 floats per block -- 4 KB per block
+- inner loop computes dot product
+	- but we reuse one dimension
+	- so each thread will calculate a column of results
+## compiler optimizations sidenote
+- both loops unrolled, because loop count known at compile time
+- then eliminate repeated SMEM loads of `Bs` entries, so same amount of SMEM accesses
+- SMEM loads from Bs vectorized when PTX compiled to SASS
+## areas of improvement: arithmetic intensity
+- we have the same stalling for memory problem, just less
+- compute even more results per thread
+	- more elements of the output matrix
+# kernel 5, 2d blocktiling
+- compute a grid of 8x8 elements of C, per thread
+- all threads work together to populate SMEM, have each thread load multiple elements
+- so we load from SMEM into thread-local registers, and then slowly accumulate results into our 2x2 square
+- next, let's transpose As to auto-vectorize SMEM loads, and promise alignment for GMEM accesses
+# kernel 6, vectorized mem accesses
+- we get 3% speedup from transposing As
+- vectorize all lds/stores from/to GMEM with vector dtypes, `float4`
+- use `reinterpret_cast` to vectorize, operate on pointers
+- so this is a promise to the compiler that the pointer is aligned
+# kernel 9, autotuning
+- lots of parameters, grid search
+- triton has routines for autotuning
+# kernel 10, warptiling
+- blocktiling, along K dimension, moving GMEM to SMEM
+- threadtiling, along BK, move SMEM to reg
+- outer product of registers, move reg to cuda cores
+- next is warptiling
+- we get parallelism at the warp-scheduler level
