@@ -1,0 +1,212 @@
+- three kinds of events that force CPU to set aside ordinary execution, transfer of control to handle event
+	- system call, with `ecall` to request action from kernel
+	- exception: instruction does smth illegal, like div by 0, invalid virtual address
+	- device interrupt, like device signals that it needs attention
+- *trap* is the generic term for these situations
+- code that was executing needs to resume later, without awareness that anything happened
+- traps should be transparent
+- traps force transfer of control into kernel
+	- then registers and other state are saved
+	- kernel executes appropriate handler code
+	- kernel restores saved state and returns from trap
+	- original code resumes
+- traps handled in kernel
+- not delivered to user code
+- this is natural for system calls
+- makes sense for interrupts, since isolation demands that only the kernel be allowed to use devices
+- also makes sense for exceptions -- xv6 responds to exceptions from user space by killing the offending program
+- four stages
+	- hardware actions taken by RISC-V cpu
+	- some assembly that prepares the way for kernel C code
+	- C function to decide what to do with trap
+	- syscall or device-driver service routine
+- two cases: traps from user space and kernel space
+- kernel code that processes a trap is called a *handler*
+- first handler instructions usually written in assembler, called *vector*
+# risc-v trap machinery
+- control registers that kernel writes to tell CPU how to handle traps
+	- or kernel reads from them to find out about a trap
+- most important registers
+	- `stvec`: kernel writes address of trap handler here
+		- RISC-V jumps to address in `stvec` to handle trap
+	- `sepc` when trap: RISC-V saves program counter here, since `pc` overwritten with value in `stvec`
+		- `sret` (return from trap) instruction copies `sepc` to `pc`
+		- can write `sepc` to control where `sret` goes
+	- `scause`: number describing reason for trap
+	- `sscratch`: trap handler code uses this to avoid overwriting user registers, before saving them
+	- `sstatus`
+		- SIE bit controls whether device interrupts enabled
+			- if cleared, device interrupts deferred until set again
+		- SPP bit indicates whether trap came from user or supervisor mode
+			- controls to what mode `sret` returns
+- these registers relate to traps handled in supervisor mode
+	- cannot be read or written in user mode
+- each cpu has a set of these registers
+	- more than one cpu can be handling a trap at any given time
+- when a trap must be forced, the hardware does this:
+	- if trap is device interrupt, and `sstatus` SIE bit clear, ignore the rest of the steps
+	- disable interrupts by clearing SIE bit in `sstatus`
+	- copy `pc` to `sepc`
+	- save current mode in SPP bit in `sstatus`
+	- set `scause` to reflect trap's cause
+	- set mode to supervisor
+	- copy `stvec` to `pc`
+	- start execution at new `pc`
+- CPU doesn't switch to kernel page table, or switch to stack in kernel, or save any registers
+	- kernel software does this
+- minimal work during trap, to provide flexibility to software
+# traps from user space
+- traps handled differently depending on whether trap occurs while excuting in kernel or user code
+- when occur?
+	- system call, `ecall` instruction
+	- illegal action
+	- device interrupts
+- trap from userspace, general high-level path:
+	- `uservec`, then `usertrap`, `usertrapret`, `userret`
+- risc-v hardware does not switch page tables when forcing a trap
+	- trap handler address in `stvec` must have valid mapping in user page table
+	- trap handling code also needs to switch to kernel page table
+	- also, to continue executing after that switch, kernel page table must also have mapping for handler pointed to by `stvec`
+- trampoline page
+	- contains `uservec`, trap handling code that `stvec` points to
+	- mapped in every process's page table at address `TRAMPOLINE`
+	- at top of VA space, so above program memory
+	- also mapped at same address in kernel page table
+	- so no change after switching
+- when `uservec` starts, all 32 regs contain values owned by interrupted user code
+	- need to be saved in memory
+	- this requires a register to hold the address -- but no general-purpose ones available!
+	- so, we have a `sscratch` register
+	- `csrw` instruction at start of `uservec` saves `a0` in `sscratch`, so `uservec` can have a register to play with
+- then save 32 user regs
+	- kernel allocates a page of memory for a `trapframe` structure
+	- this has space to save the 32 user registers
+	- `satp` is still user page table
+	- `uservec` needs trapframe to be mapped in user address space
+	- this is mapped at VA `TRAPFRAME` in process's user page table
+	- just below `TRAMPOLINE`
+- `uservec` loads address `TRAPFRAME` into `a0` and saves all user registers there
+	- user's `a0` is read from `sscratch`
+- `trapframe` contains address of process's kernel stack, current CPU's hartid, address of `usertrap` function, address of kernel page table
+- `uservec` retrieves these, switches `satp` to kernel page table, jumps to `usertrap`
+- job of `usertrap` is to determine cause of trap, process, and return
+	- changes `stvec` so trap while in kernel handled by `kernelvec`, not `uservec`
+	- saves `sepc` register, because `usertrap` might switch to another process's kernel thread
+	- that process might return to user space, which modifies `sepc`
+- syscall path adds 4 to saved user PC because RISC-V leaves PC pointing to `ecall` but we want to continue after
+- `usertrap` checks if process killed or should yield CPU
+- first step in returning to user space is call to `usertrapret`
+	- this sets up control registers to prepare for future trap
+	- set `stvec` to `uservec`, prepare trapframe fields that `uservec` relies on
+	- `usertrapret` sets `sepc` to previously saved one
+	- `usertrapret` calls `userret` on tramp page mapped in both page tables
+		- this will switch page tables
+- `usertrapret`'s call to `userret` passes pointer to process's user page table in a0
+	- `userret` switches `satp` to process's user page table
+- trampoline page mapping at the same virtual addres in user and kernel page tables allows `userret` to keep executing after changing `satp`
+- but afterwards, can only use register contents and content of trapframe
+	- load trapframe address into `s0`, restore saved user registers via `a0`, restore saved user `a0`, then does `sret`
+# calling system calls
+- arguments for `exec` placed in `a0` and `a1`
+- puts syscall number in `a7`
+	- `syscalls` array is a table of function pointers
+- `ecall` traps into kernel, causes `uservec`, `usertrap`, and `syscall` to execute
+- `syscall` retrives syscall number from `a7`, indexes into `syscalls`
+- `a7` contains `SYS_exec` for first syscall
+- when `sys_exec` returns, `syscall` records return value in `p->trapframe->a0`
+- causes original user-space call to `exec()` to return that value
+- C calling convention on RISC-V places return values in `a0`
+- invalid syscall number means error printed, `-1` returned
+# syscall arguments
+- user code calls system call wrapper functions
+- so arguments are where RISC-V calling conventions say they will be, in registers
+- save user registers to current process's trap frame, so kernel code can find them there
+- some syscalls pass pointers as arguments
+	- these must be used to read/write user mem
+- `exec` syscall passes an array of pointers, these are string arguments in user space
+	- user program might be buggy!
+	- invalid pointer, or pointer intended to trick kernel into accessing kernel memory
+	- page table mappings not the same, so ordinary instructions can't be used to load/store from user addresses
+- so `fetchstr` is used to retrieve string file-name arguments from user space
+	- uses `copyinstr`
+		- this copies to `dst` from virtual address `srcva` in user page table
+		- so need to `walk` to translate `srcva` to physical address `pa0`
+		- kernel page table maps all of physical RAM at VAs equal to RAM's physical address
+		- so can directly copy string bytes from `pa0` to `dst`
+# traps from kernel space
+- handled differently
+- when entering, `usertrap` points `stvec` to asm code at `kernelvec`
+- this only executes if `xv6` already in the kernel
+- `kernelvec` can rely on `satp` being kernel page table
+- stack pointer refers to valid kernel stack
+- so just push all 32 registers onto stack
+- save registers on stack of interrupted kernel thread
+	- register values belong to that thread
+- if the trap causes a switch to a diff thread, the trap will return from stack of new thread, and interrupted thread's saved registers are safe on stack
+- `kernelvec` jumps to `kerneltrap` after this
+	- prepared for device interrupts and exceptions
+	- the latter is always fatal error, `panic` and stop execution
+- if called due to timer interrupt and process's kernel thread running, `yield` called to give other threads a chance to run
+	- at some point one of those other threads will yield and `kerneltrap` resumes again
+- when `kerneltrap` work done, needs to return to whatever code was interrupted by the trap
+- because `yield` may have disturbed `sepc` and previous mode in `sstatus`, this is saved
+- restores control registers, returns to `kernelvec`
+	- this pops saved registers from stack, executes `sret`
+# page-fault exceptions
+- any exception results in killing the process if user-space
+	- and if in kernel, kernel panics
+- many kernels use page faults to implement copy-on-write fork
+	- `fork` causes mem content to be the same
+	- more efficient if child and parent can just share parent's memory
+- this can be done by proper use of page-table permissions and page faults
+	- page-fault exception when virtual address used:
+		- no mapping in page table
+		- or `PTE_V` flag clear
+		- or mapping where permission bits forbid it
+- a few types of page faults
+	- load page faults
+	- store page faults
+	- instruction page faults
+- `scause` has type of page fault
+- `stval` contains address that could not be translated
+- basic plan: parent and child initially shares all physical pages
+- both map them read-only
+	- if they try to write, raise page-fault exception
+	- kernel trap handler responds -- allocates new page of physical memory, copying it into physical page that faulted address maps to
+	- changes relevant PTE in faulting process's page table to point to the copy, and allows writes as well as reads
+	- then continue
+	- this requires book-keeping to decide when physical pages can be freed
+- so if a process incurs store page fault, and that page is only referred to from that process's page table, no copy needed
+- copy-on-write makes `fork` faster
+- more features: lazy allocation
+	- when app asks for more memory by calling `sbrk`, kernel notes increase in size but doesn't do anything
+		- upon page fault on new address, allocate and map physical memory page
+	- this incurs extra overhead of page faults -- user/kernel transition
+- demand paging
+	- in `exec`, all of app's text and data loaded into memory before starting
+	- to decrease startup, just create user page table with all PTEs marked invalid
+	- every time page used for the first time, page fault happens
+	- kernel reads content of page from disk, maps into user address space
+- what if memory needed is more than RAM available?
+	- paging to disk
+	- store some of user pages in RAM, rest on disk in paging area
+	- kernel marks PTEs that correspond to memory in paging area as invalid
+	- if we try to use a page that has been paged out, page fault
+	- page must be paged in: allocate page of RAM, read, modify PTE
+	- what if no RAM available?
+		- evict one
+		- this is expensive, so infrequent
+- little or no free physical memory might be scarce
+- so lazy allocation and demand paging advantageous when free memory scarce, only a fraction of allocated memory used
+- can also avoid work wasted when page allocated/loaded, but never used or evicted before it can be used
+- other features: automatically extending stacks, memory mapped files
+# real world
+- RISC-V does as little as possible when forcing trap
+	- this allows very fast trap handling
+- first few instructions of handler execute in user environment
+- also, trap handler does not know stuff like identity of process or address of kernel page table
+- protected places where kernel can stash info before entering user space
+	- `sscratch` register
+	- and user page table entries that point to kernel memory but protected  by lack of `PTE_U`
+- can get rid of special tramp. pages, if kernel memory mapped into every process's user page table
+- 

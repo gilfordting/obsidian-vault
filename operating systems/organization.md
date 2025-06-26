@@ -1,0 +1,146 @@
+- key OS requirement: support several activities at once
+- for example, `fork`
+- OS must time-share resources
+- ensure that all processes get a chance to execute
+- also need to isolate processes
+- but they should also be able to interact
+- three requirements: multiplexing, isolation, interaction
+- many ways to achieve this, but we focus on mainstream designs around a *monolithic kernel*
+- `xv6` runs on multicore RISC-V microprocessor
+# abstracting physical resources
+- why have it at all?
+	- we could implement syscalls as a library, that apps link
+	- could directly interact with hardware resources, and use them in the best, most performant way
+	- but if there's more than one app running, they must all be well-behaved
+	- so this allows more room for error: not trust each other, buggy, etc
+- strong isolation: forbid apps from directly accessing sensitive hardware resources
+	- abstract them into services
+- unix apps interact with storage only through FS:
+	- `open`, `read`, `write`, `close` syscalls
+	- no reading and writing of disk directly
+- this way, we get the convenience of pathnames
+- and the OS, as interface implementer, manages disk
+- even if isolation not concern, programs that interact intentionally are likely to find a FS more convenient that direct disk use
+- transparently switches hardware CPUs among processes
+- saves, restores register state as necessary
+- apps don't have to be aware of timesharing
+- unix processes use `exec` to build up memory image
+	- allows OS to decide where to place process in memory
+	- some data might even be on disk
+	- FS can be used to store executable program images
+- lots of interaction via file descriptor
+	- abstract away details
+	- simplified interaction -- if one app fails, kernel generates EOF signal for next process in pipeline
+# user/supervisor mode, syscalls
+- strong isolation requires hard boundary between apps and OS
+- if app makes mistake, don't want OS to fail or other apps to fail
+- OS should be able to clean up failed app, continue running others
+- also, apps can't modify OS's data structures and instructions
+- and apps can't access other processes' memory
+- three modes: machine mode, supervisor mode, user mode
+- machine mode:
+	- full privilege
+	- CPU starts in this mode
+	- intended for setting up computer uring boot
+	- a few lines in machine mode, then transition to supervisor mode
+- supervisor mode
+	- can exec privileged instructions
+	- enabling and disabling interrupts, reading/writing register that holds page table address, etc
+- if user-mode app tries to execute privileged instruction, cpu doesn't execute
+- instead, switches to supervisor mode so supervisor can terminate app
+- app can exec only user-mode instructions, like adding numbers -- running in user space
+- software in supervisor mode can do priv. inst's, running in kernel space -- this software also called kernel
+- invoking a kernel function, like `read` syscall?
+	- transition to kernel
+	- app can't invoke it directly
+- cpus provide a special instruction to switch CPU, enter kernel at entry point specified
+	- `ecall` in RISC-V
+- once switched to supervisor mode:
+	- kernel can then validate args of syscall
+		- e.g. checking that address is in right space
+	- decide whether the app is allowed to perform the requested op
+		- e.g. can it write to the file?
+	- then deny or execute
+- kernel controls entry point
+	- otherwise, malicious apps could enter kernel at a point where validation of args is skipped
+# kernel organization
+- what part of the OS runs in supervisor mode?
+- one possibility: entire OS in kernel
+	- monolithic kernel
+- entire OS is single program with hardware privilege
+- how to reduce risk of mistakes?
+	- execute bulk of OS in user mode
+	- microkernel
+- interprocess comm. mechanism to interact with file server, which is user-level process
+- microkernel kernel interface:
+	- a few low-level functions
+	- starting apps, sending messages, accessing device hardware, etc
+	- this org allows kernel to be p simple
+# process overview
+- process is the unit of isolation
+- separate memory, CPU, file descriptors, etc that can't be wrecked or spied on
+- also prevent process from wrecking kernel
+- user/supervisor mode flag, address spaces, time-slicing
+- program has own private machine, basically
+- private memory address space
+- page tables to give each process own address space
+- RISC-V page table maps a virtual address to physical address
+- separate page table for each process that defines that process's address space
+- addr. space includes process's user memory starting at VA 0
+- instructions, then global vars, then stack, then heap (for malloc)
+- max size of process address space limited
+	- 38 bits used for virtual address
+- at the top of address space, `xv6` has trampoline page and trapframe page
+	- trampoline page: code to transition in and out of kernel
+	- trapframe: where kernel saves process's user registers
+- pieces of state managed for each process
+	- most important pieces: page table, kernel stack, run state
+- each process has thread of control that holds state needed to execute process
+	- thread might be executing on CPU or suspended
+	- to switch between procs, kernel suspends thread currently running on that CPU, saves state, restores state of previously suspended thread
+	- much of state (local vars, funccall return addresses) on thread's stacks
+	- two stacks: user stack and kernel stack
+- process executing user instructions: only user stack in use, kernel stack empty
+- when process enters kernel for syscall or interrupt, kernel code executes on process's kernel stack
+- while process is in kernel, user stack still contains saved data, but not used
+- process makes syscall using RISC-V `ecall`
+- raises hardware privilege level, changes PC to kernel defined entry point
+- code at entry point switches to process's kernel stack, exec's kernel instructions that implement syscall
+- then kernel switches back to user stack, and returns to user space -- `sret` instruction
+- process thread can block in kernel to wait for I/O, then resume after I/O finishes
+- `p->state`: whether process allocated, ready to run, currently running on CPU, waiting for I/O, exiting
+- `p->pagetable`: holds process's page table in format that RISC-V hardware expects
+# starting xv6, first process and syscall
+- `xv6` kernel loaded into mem at physical addr `0x80000000`
+	- before that is I/O devices
+- a stack is declared
+	- space for initial stack, `stack0`
+	- loads stack pointer register `sp` with address `stack0 + 4096` -- each cpu gets 4096-byte stack
+	- then C code called at `start`
+- `start`
+	- some configuration, then switches to supervisor mode
+	- this is done with `mret` -- used to return from prev. call from supervisor mode to machine mode
+	- not *actually* returning from such a call, but setup as if it were
+		- previous privilege mode set to supervisor in `mstatus` register
+		- sets return address to `main` by writing `main`'s address into `mepc` reg
+		- disable virtual address translation in supervisor mode by writing `0` into page-table register `satp`
+		- delegate all interrupts and exceptions to supervisor mode
+	- last task: programs clock chip to generate timer interrupts
+- `main`
+	- initializes devices and subsystems
+	- creates first process, calls `userinit`
+	- this process executes small program in RISC-V, first syscall in `xv6`
+	- `ecall` is called
+- kernel uses number in register `a7` in `syscall` function to call desired system call
+- system call table maps values to functions
+- `exec` replaces memory and registers of current process with new program
+# security model
+- OS must assume that process's user-level code will do its best to wreck the kernel
+	- user code might try to dereference pointers outside allowed address space
+	- might attempt to execute any RISC-V instructions
+	- may try to read any control register
+	- may try to access device hardware
+	- pass clever values to system calls
+- kernel code? different expectations
+	- assumed to be written by careful, well-meaning programmers
+	- and to be bug-free

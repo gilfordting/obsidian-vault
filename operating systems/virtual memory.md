@@ -75,3 +75,124 @@ chapter 3 in [xv6 book](https://pdos.csail.mit.edu/6.828/2024/xv6/book-riscv-rev
 	- + the physical memory that they're allowed to access (by the page table)
 	- *virtual memory*: ideas, techniques associated with page tables. using them to achieve goals, like isolation
 # kernel address space
+- one page table per process, that describes process's user address space
+- a single page table for kernel's address space
+- kernel config's layout of address space to give itself access to physical mem and various hardware resources, at predictable virtual addresses
+- qemu simulates computer with RAM starting at physical address `0x80000000` and continuing through at least `0x88000000`, called `PHYSTOP`
+	- also includes I/O devices like a disk interface
+	- qemu exposes device interfaces to software as memory-mapped control regs that sit below `0x80000000` in physical address space
+	- kernel can interact with devices by reading/writing special physical addresses
+- kernel uses ram and mmapped device registers using direct mapping
+	- mapping resources at virtual addresses equal to physical one
+- some kernel virtual addresses aren't direct mapped
+	- trampoline page, at top of virtual address space
+		- user page tables have same mapping
+		- physical page is mapped twice in virtual address space of kernel
+		- once at top of VA space, once with direct mapping
+	- kernel stack pages
+		- each process has its own kernel stack, mapped high so below xv6 can leave unmapped guard page
+		- if kernel overflows stack, cause exception
+		- without guard page, overflowing stack overwrites other kernel memory
+# creating an address space
+- central data structure is `pagetable_t`
+	- pointer to RISC-V root page-table page
+	- might be either kernel page table, or per-process one
+- functions:
+	- `walk`, PTE for virtual address
+	- `mappages`, installing PTEs for new mappings
+- boot sequence
+	- `kvmmake` allocates page of physical memory for root page-table page
+	- then `kvmmap` to install translations that kernel needs
+		- instructions and data, physical mem up to `PHYSTOP`, mem ranges that are devices
+- `proc_mapstacks` allocates kernel stack for each process
+- call `kvmmap` to map each stack at virtual address gen. by `KSTACK`, leaving room for guard pages
+- `kvmmap` calls `mappages`, installing mappings into page table for range of virtual addresses to range of physical addresses
+	- done for each virtual address in range, at page intervals
+	- call `walk` to find address of PTE
+	- then init PTE to hold relevant PPN, desired permissions, PTE_V
+- physical memory direct-mapped into kernel virtual address space
+- `main` calls `kvminithart` to install kernel page table
+	- write address of root page-table page into `satp` register
+- afterwards, translate using kernel page table
+- page table entries cached in TLB
+	- when page table changed, tell CPU to invalidate cached TLD entries
+	- xv6 executes `sfence.vma` to flush TLB
+	- done after reloading `satp`
+	- and in trampoline code that switches to user page table before returning to user space
+- need to do `sfence.vma` before changing `satp`, to wait for outstanding loads and stores to complete, so they use the old page table
+# physical memory allocation
+- kernel must allocate and free physical mem. at run-time for page tables, user memory, kernel stack, pipe buffers
+- physical mem between end of kernel and `PHYSTOP` for runtime alloc
+- alloc and free 4096-byte pages at a time
+- linked list threaded through pages
+# physical memory allocator
+- `kalloc.c`
+- data structure: free list of physical memory pages that are available
+- each free page's list element is a struct run
+- how does allocator get memory to hold that?
+	- store each free page's run structure in the free page itself
+- protected by spin lock
+- wrapped in struct, make it clear that lock protects fields
+- `main` calls `kinit` to initialize allocator
+	- this init's free list to hold every page between end of kernel and `PHYSTOP`
+- Should determine how much phys. memory available by parsing config information provided by hardware
+- add memory to free list via per-page calls to `kfree`
+- PTE can only refer to physical address aligned on 4096-byte boundary
+- sometimes treats addresses as integers, in order to perform arithmetic
+	- and sometimes uses them as pointers, to read and write memory
+	- lots of type casts!
+- `kfree` sets all bytes to 1 if freed
+	- garbage
+- linked list
+# process address space
+- each process has own page table
+- switch page table when switch between processes
+- virtual addresses: 0 to `MAXVA`
+- address space contains:
+	- pages with text of program
+		- `PTE_R`, `PTE_X`, `PTE_U`
+	- pages containing pre-initialized data of program
+	- page for stack
+	- pages for heap
+		- data is R, W, U flags
+- permissions within user address space is common technique to harden user process
+	- if mapped with W, then process can modify own program!
+	- if try to store at address 0, raise page fault
+	- same for `PTE_X` and program execution
+- hardening a process by setting perms carefully aids in defending against security attacks
+- stack is single page
+	- strings containing cmd-line args, as well as array of pointers, are very top of stack
+	- under that allow program to start at main, just like if `main(argc, argv)` had just been called
+- detection of overflowing stack memory?
+	- guard page right below, by clearing `PTE_U` flag
+- heap is grown when more user memory needed
+- examples of page table use
+	- different processes' page tables translate user addresses to different pages of physical memory
+	- private memory!
+	- each process sees its memory as contiguous starting at 0, but really can be non-contiguous
+	- kernel maps page of trampoline code at top of user address space, so a single page of physical memory shows up in all address spaces, but can be used only be kernel!
+		- no `PTE_U` flag
+# `sbrk`
+- syscall for process to shrink or grow memory
+- `growproc`, which calls `uvmalloc` or `uvmdealloc`
+	- former allocates with `kalloc`, zeros allocated memory, adds PTEs to page table
+	- latter `walk`s to find PTEs, and `kfree` to free memory they refer to
+- `xv6` uses page table to not just tell hardware how to map user virtual addresses
+	- but also as only record of which physical memory pages are allocated
+# `exec`
+- syscall that replaces process's user address space with data read from file
+- open path
+- then read ELF header
+- ELF binary:
+	- ELF header
+	- then sequence of program section headers
+- `exec` allocates new page table with no user mappings
+	- allocates memory for each ELF segment with `uvmalloc`
+	- loads each segment into memory with `loadseg`
+		- this uses `walkaddr` to find physical address of allocated mem at which to write each page of ELF segment
+- alloc, initialize user stack
+	- one stack page
+	- copies arg strings to top of stack one at a time
+- other stuff
+# real world
+- real OS's use paging and page-fault exceptions
