@@ -1,0 +1,11 @@
+- tiling
+- using constant memory
+- thread coarsening
+- warp group shuffle sync
+- parallel reductions (sum, max, etc)
+- register tiling
+- wgmma
+- maximizing occupancy, tuning SM resources like TPB and MPB and RPT
+- coalesced global mem accesses
+- minimize control divergence
+- if atomics: privatization

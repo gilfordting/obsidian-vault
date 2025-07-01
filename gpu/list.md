@@ -1,6 +1,39 @@
-https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog
-systolic arrays, TPUs
-machete kernel: https://www.youtube.com/watch?v=-4ZkpQ7agXM
-fa3: https://arxiv.org/abs/2407.08608
-PMPP
 - [x] [gpu puzzles](https://colab.research.google.com/drive/1OaNPgsRL55qVRxVEBdyWtQZ3UPu5vUYz#scrollTo=e713d056)
+- [ ] PMPP
+	- [x] ch1
+	- [x] ch2
+	- [x] ch3
+	- [x] ch4
+	- [x] ch5
+	- [x] ch6
+	- [x] ch7
+	- [ ] ch8
+	- [ ] ch9
+	- [ ] ch10
+	- [ ] ch11
+	- [ ] ch12
+	- [ ] ch13
+	- [ ] ch14
+	- [ ] ch15
+	- [ ] ch16
+	- [ ] ch17
+	- [ ] ch18
+	- [ ] ch19
+	- [ ] ch20
+	- [ ] ch21
+	- [ ] ch22
+	- [ ] ch23
+- [ ] [lei mao's blog](https://leimao.github.io/tags/CUDA/)
+	- [ ] [shared mem swizzling](https://leimao.github.io/blog/CUDA-Shared-Memory-Swizzling/)
+- [ ] flashattention
+	- [x] one
+	- [x] two
+	- [ ] [three](https://tridao.me/blog/2024/flash3/)
+- [ ] systolic arrays and TPUs
+- [ ] [machete kernel](https://www.youtube.com/watch?v=-4ZkpQ7agXM)
+- [ ] [cuBLAS worklog](https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog)
+- [ ] maharshi
+	- [x] [softmax worklog](https://maharshi.bearblog.dev/optimizing-softmax-cuda/)
+	- [ ] [sgemv worklog](https://maharshi.bearblog.dev/optimizing-sgemv-cuda/)
+- [ ] [gpu mode lecture notes](https://christianjmills.com/series/notes/cuda-mode-notes.html)
+- [ ] 
