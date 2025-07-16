@@ -36,4 +36,20 @@
 	- [x] [softmax worklog](https://maharshi.bearblog.dev/optimizing-softmax-cuda/)
 	- [ ] [sgemv worklog](https://maharshi.bearblog.dev/optimizing-sgemv-cuda/)
 - [ ] [gpu mode lecture notes](https://christianjmills.com/series/notes/cuda-mode-notes.html)
+- [x] [gpu tech conf: fundamental cuda optimizations](https://developer.download.nvidia.com/GTC/PDF/1083_Wang.pdf)
+- [ ] [NCSA Illinois Fundamental CUDA Opt](https://bluewaters.ncsa.illinois.edu/liferay-content/document-library/Documentation%20Documents/Workshops/Advanced%20User%20Workshop%20Oct%202014/NCSA02_Fundamental_CUDA_Optimization.pdf)
+- [ ] [AMS 148](https://ams148-spring18-01.courses.soe.ucsc.edu/system/files/attachments/note8_0.pdf)
+- [ ] [CS4402 UWO](https://www.csd.uwo.ca/~mmorenom/HPC-Slides/Optimizing_CUDA_Code.pdf)
+- [ ] [ENCCS](https://enccs.github.io/cuda/1.01_GPUIntroduction/)
+- [x] [axel: smem banks](https://feldmann.nyc/blog/smem-microbenchmarks)
+- [x] [fivable opt techniques](https://library.fiveable.me/parallel-and-distributed-computing/unit-12/cuda-kernel-optimization-techniques/study-guide/rxIvWYwl0ITaHYOP)
+- [ ] [diffusion inference opt, vrushank desai](https://www.vrushankdes.ai/diffusion-inference-optimization)
+- [ ] [leetgpu resources](https://www.leetgpu.com/resources)
+- [ ] [GPU MODE Resource Stream](https://github.com/gpu-mode/resource-stream)
+- [nasa basics on gpu hardware arch](https://www.nas.nasa.gov/hecc/support/kb/basics-on-nvidia-gpu-hardware-architecture_704.html)
+- [ ] 
+- [x] [gpu glossary](https://modal.com/gpu-glossary)
+- [ ] [CUHK Slides (parallel reduction, gmem)](https://www.cse.cuhk.edu.hk/~byu/CENG5030/2023Fall/slides/Im5-CUDA.pdf)
+- [ ] leetgpu
+- [ ] [CUTLASS Guide](https://github.com/NVIDIA/cutlass/tree/main/media/docs/cpp)
 - [ ] 

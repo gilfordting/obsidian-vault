@@ -1,0 +1,16 @@
+[link](https://feldmann.nyc/blog/smem-microbenchmarks)
+- smem organized in 32 banks
+- this is so a warp can access in one cycle
+- single-bank conflict is almost exactly 32x longer -- serialization happening
+- different warps accessing different banks? smem can't overlap accesses from different warps
+- multicast, same address from one bank
+	- broadcast is possible
+	- can do arbitrary multicasts at the same speed as it's able to do conflict-free loads and full-warp broadcasts
+- wide vectorized loads
+	- `ld.shared.v4` load multiple contiguous 32-bit vals from smem into registers
+	-  careful hardware load scheduling -- load from 4 banks, but not necessarily in same order
+- shared vector loads
+	- share same 2-vector of floats?
+	- perspective of shared memory: each bank servicing 1 load/cycle
+	- each lane getting 2 loads/cycle worth of data, though
+	- every value multicast to both lanes, without perf penalties
